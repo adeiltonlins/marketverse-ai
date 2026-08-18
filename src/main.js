@@ -1,3 +1,5 @@
+import './habbo.js';
+
 const agents=[
  {id:'strategy',name:'Estratégia',icon:'🧠',cls:'a1',prop:'📋'},
  {id:'research',name:'Pesquisa',icon:'🔎',cls:'a2',prop:'🔎'},

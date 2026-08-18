@@ -1,22 +1,4 @@
-/* MarketVerse HQ — ciclo visual: estação → Coordenador → estação → trabalho */
-.mv .station .pixel.walk {
-  z-index: 40;
-  animation: mvWalkMission 3.6s steps(24,end) forwards !important;
-}
-.mv .station .pixel.walk b { animation: mvStepBob .18s steps(2,end) infinite; }
-.mv .station.is-working .pixel:not(.walk) { animation: mvWorkAtDesk .34s steps(2,end) infinite !important; }
-@keyframes mvWalkMission {
-  0% { transform: translate(0,0); }
-  28% { transform: translate(var(--dx), var(--dy)); }
-  42% { transform: translate(var(--dx), var(--dy)) translateY(-2px); }
-  70% { transform: translate(0,0); }
-  100% { transform: translate(0,0); }
-}
-@keyframes mvStepBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
-@keyframes mvWorkAtDesk { 0%,100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-3px) scale(1.02); } }
-.mv .station.is-working .pixel.walk { filter: drop-shadow(0 0 10px #a78bfa); }
-.mv .station.is-working .desk:before { animation: mvScreenBlink .7s steps(2,end) infinite; }
-@keyframes mvScreenBlink { 50% { opacity:.45; } }
-@media (prefers-reduced-motion: reduce) {
-  .mv .station .pixel.walk,.mv .station .pixel.walk b,.mv .station.is-working .pixel:not(.walk),.mv .station.is-working .desk:before { animation:none !important; }
-}
+/* MarketVerse HQ — sala viva: movimento + balões + inspeção */
+.mv .station .pixel.walk{z-index:40;animation:mvWalkMission 3.6s steps(24,end) forwards!important}.mv .station .pixel.walk b{animation:mvStepBob .18s steps(2,end) infinite}.mv .station.is-working .pixel:not(.walk){animation:mvWorkAtDesk .34s steps(2,end) infinite!important}@keyframes mvWalkMission{0%{transform:translate(0,0)}28%{transform:translate(var(--dx),var(--dy))}42%{transform:translate(var(--dx),var(--dy)) translateY(-2px)}70%{transform:translate(0,0)}100%{transform:translate(0,0)}}@keyframes mvStepBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}@keyframes mvWorkAtDesk{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-3px) scale(1.02)}}.mv .station.is-working .pixel.walk{filter:drop-shadow(0 0 10px #a78bfa)}.mv .station.is-working .desk:before{animation:mvScreenBlink .7s steps(2,end) infinite}@keyframes mvScreenBlink{50%{opacity:.45}}
+.mv .station .pixel.working::after{position:absolute;left:50%;bottom:calc(100% + 12px);transform:translateX(-50%);z-index:100;min-width:125px;max-width:180px;padding:7px 9px;border:2px solid #18181b;border-radius:10px;background:#fff;color:#18181b;box-shadow:3px 3px 0 #18181b;font:700 10px/1.2 Inter,Arial,sans-serif;white-space:normal;text-align:center;content:'Trabalhando…';pointer-events:none}.mv .station[data-agent="research"] .pixel.working::after{content:'🔎 Pesquisando referências…'}.mv .station[data-agent="strategy"] .pixel.working::after{content:'🧠 Definindo estratégia…'}.mv .station[data-agent="creative"] .pixel.working::after{content:'🎨 Criando conceito visual…'}.mv .station[data-agent="copy"] .pixel.working::after{content:'✍️ Escrevendo copy…'}.mv .station[data-agent="social"] .pixel.working::after{content:'📱 Preparando publicação…'}.mv .station[data-agent="performance"] .pixel.working::after{content:'💰 Otimizando campanha…'}.mv .station[data-agent="seo"] .pixel.working::after{content:'🔍 Trabalhando SEO…'}.mv .station[data-agent="crm"] .pixel.working::after{content:'📧 Organizando CRM…'}.mv .station[data-agent="analytics"] .pixel.working::after{content:'📊 Analisando dados…'}.mv .station[data-agent="growth"] .pixel.working::after{content:'🧪 Testando crescimento…'}
+.mv-agent-inspector{position:fixed;right:20px;bottom:20px;width:min(310px,calc(100vw - 40px));z-index:9999;padding:18px;border:2px solid #27272a;border-radius:16px;background:rgba(17,17,20,.96);color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.35);font-family:Inter,Arial,sans-serif}.mv-agent-inspector.hidden{display:none}.mv-agent-inspector small{color:#a78bfa;font-weight:800;letter-spacing:.12em}.mv-agent-inspector h3{margin:5px 0 4px;font-size:20px}.mv-agent-inspector p{margin:0 0 12px;color:#d4d4d8}.mv-inspector-status{padding:9px 10px;border-radius:9px;background:#27272a;font-weight:700}.mv-inspector-line{height:4px;margin:12px 0;background:linear-gradient(90deg,#a78bfa,#22d3ee);border-radius:9px;animation:mvPulse 1.2s ease-in-out infinite}.mv-agent-inspector span{font-size:11px;color:#a1a1aa}.mv-inspector-close{position:absolute;right:8px;top:6px;border:0;background:none;color:#fff;font-size:24px;cursor:pointer}@keyframes mvPulse{50%{opacity:.45;transform:scaleX(.8)}}@media (prefers-reduced-motion:reduce){.mv .station .pixel.walk,.mv .station .pixel.walk b,.mv .station.is-working .pixel:not(.walk),.mv .station.is-working .desk:before,.mv-inspector-line{animation:none!important}}

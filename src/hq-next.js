@@ -1,3 +1,5 @@
+import './hq-next.css';
+
 const AGENTS=[['research','Pesquisa','🔎','🔎'],['strategy','Estratégia','🧠','📋'],['creative','Criativo','🎨','🎨'],['copy','Copywriter','✍️','⌨️'],['social','Social Media','📱','📱'],['performance','Performance','💰','💻'],['seo','SEO','🔍','🔍'],['crm','CRM','📧','💌'],['analytics','Analytics','📊','📈'],['growth','Growth','🧪','🧪']];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const key='marketverse_campaigns_v3';let campaigns=JSON.parse(localStorage.getItem(key)||'[]');

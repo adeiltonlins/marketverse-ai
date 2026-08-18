@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@openai/api": "latest",
+    "openai": "latest",
     "dotenv": "latest",
     "express": "latest"
   }

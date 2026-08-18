@@ -27,32 +27,69 @@ const agents = [
 
 const base = (brief) => `Você é um especialista da equipe MarketVerse AI. Trabalhe somente dentro do seu papel.\n\nBRIEFING DA CAMPANHA:\n${brief}\n\nEntregue uma resposta objetiva, acionável e estruturada. Não invente dados que não estejam no briefing. Quando faltar informação, sinalize a hipótese.`;
 
-app.post('/api/campaign', async (req, res) => {
-  const brief = String(req.body?.brief || '').trim();
-  if (!brief) return res.status(400).json({ error: 'Informe o briefing da campanha.' });
-  if (!openai) return res.status(503).json({ error: 'OPENAI_API_KEY não configurada no servidor.' });
+const send = (res, event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-  try {
-    const results = await Promise.all(agents.map(async ([id, name, role]) => {
+async function runCampaign(brief, res) {
+  const results = [];
+  send(res, 'campaign', { status: 'started', brief, model: MODEL, agents: agents.length });
+
+  const runAgent = async ([id, name, role]) => {
+    send(res, 'agent', { id, name, status: 'working', progress: 10, message: 'Recebeu a tarefa do Coordenador.' });
+    try {
       const response = await openai.responses.create({
         model: MODEL,
         input: `${base(brief)}\n\nSUA FUNÇÃO: ${role}\n\nResponda como ${name}.`,
         max_output_tokens: 700
       });
-      return { id, name, output: response.output_text || '' };
-    }));
+      const output = response.output_text || '';
+      const result = { id, name, output };
+      results.push(result);
+      send(res, 'agent', { id, name, status: 'completed', progress: 100, message: 'Entregou o relatório ao Coordenador.', preview: output.slice(0, 280) });
+      return result;
+    } catch (error) {
+      send(res, 'agent', { id, name, status: 'error', progress: 100, message: 'Falha na execução deste agente.' });
+      return { id, name, output: `Agente indisponível: ${error.message}` };
+    }
+  };
 
-    const synthesisInput = results.map(r => `### ${r.name}\n${r.output}`).join('\n\n');
-    const coordinator = await openai.responses.create({
-      model: MODEL,
-      input: `Você é o Coordenador do MarketVerse AI. Consolide o trabalho de 10 especialistas em um plano de campanha claro e executável. Preserve divergências importantes, elimine duplicações e destaque prioridades.\n\nBRIEFING:\n${brief}\n\nRELATÓRIOS:\n${synthesisInput}`,
-      max_output_tokens: 1200
-    });
+  send(res, 'log', { from: 'coordinator', message: 'Briefing recebido. Distribuindo 10 tarefas em paralelo.' });
+  await Promise.all(agents.map(runAgent));
 
-    res.json({ brief, model: MODEL, agents: results, coordinator: coordinator.output_text || '' });
+  send(res, 'log', { from: 'coordinator', message: 'Os 10 relatórios chegaram. Consolidando estratégia.' });
+  const synthesisInput = results.map(r => `### ${r.name}\n${r.output}`).join('\n\n');
+  const coordinator = await openai.responses.create({
+    model: MODEL,
+    input: `Você é o Coordenador do MarketVerse AI. Consolide o trabalho de 10 especialistas em um plano de campanha claro e executável. Preserve divergências importantes, elimine duplicações e destaque prioridades.\n\nBRIEFING:\n${brief}\n\nRELATÓRIOS:\n${synthesisInput}`,
+    max_output_tokens: 1200
+  });
+
+  send(res, 'coordinator', { status: 'completed', output: coordinator.output_text || '' });
+  send(res, 'campaign', { status: 'completed' });
+  res.end();
+}
+
+app.get('/api/campaign/stream', async (req, res) => {
+  const brief = String(req.query.brief || '').trim();
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  if (!brief) {
+    send(res, 'error', { message: 'Informe o briefing da campanha.' });
+    return res.end();
+  }
+  if (!openai) {
+    send(res, 'error', { message: 'OPENAI_API_KEY não configurada no servidor.' });
+    return res.end();
+  }
+
+  try {
+    await runCampaign(brief, res);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Falha ao executar a equipe de agentes.' });
+    send(res, 'error', { message: 'Falha ao executar a equipe de agentes.' });
+    res.end();
   }
 });
 

@@ -11,6 +11,7 @@ app.use(express.static(__dirname));
 
 const gemini = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || '';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_PUBLISHABLE_KEY;
 const PERSIST_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/marketverse-persistence` : null;
@@ -43,15 +44,43 @@ async function persist(action, payload) {
 function friendlyError(error) {
   const status = error?.status || error?.error?.code;
   const message = String(error?.message || '').toLowerCase();
-  if (status === 429 || message.includes('quota') || message.includes('rate limit')) return 'A API Gemini atingiu a quota ou limite de taxa.';
-  if (status === 401 || status === 403 || message.includes('api key')) return 'A chave Gemini foi recusada. Verifique GEMINI_API_KEY.';
-  if (status === 404 || message.includes('not found')) return `O modelo ${MODEL} não está disponível para esta chave/projeto.`;
-  return 'O agente encontrou um erro ao chamar o Gemini.';
+  if (status === 429 || message.includes('quota') || message.includes('rate limit')) return 'A IA atingiu a quota ou limite de taxa. Tente novamente em instantes.';
+  if (status === 503 || message.includes('unavailable') || message.includes('high demand')) return 'O serviço de IA está temporariamente congestionado. O sistema tentou recuperar automaticamente.';
+  if (status === 401 || status === 403 || message.includes('api key')) return 'A conexão com o serviço de IA foi recusada. Verifique a configuração do servidor.';
+  if (status === 404 || message.includes('not found')) return 'O serviço de IA solicitado não está disponível para esta configuração.';
+  return 'O agente encontrou um erro ao executar sua tarefa. A operação foi marcada corretamente.';
+}
+
+function isRetryable(error) {
+  const status = error?.status || error?.error?.code;
+  const message = String(error?.message || '').toLowerCase();
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504 || message.includes('unavailable') || message.includes('high demand') || message.includes('rate limit') || message.includes('temporarily');
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function generateWithModel(model, prompt, maxOutputTokens) {
+  return gemini.models.generateContent({ model, contents:prompt, config:{maxOutputTokens} });
 }
 
 async function askGemini(prompt, maxOutputTokens = 3200) {
-  const response = await gemini.models.generateContent({ model:MODEL, contents:prompt, config:{maxOutputTokens, temperature:0.7} });
-  return clean(response.text || 'Sem conteúdo textual.');
+  if (!gemini) throw new Error('GEMINI_API_KEY não configurada no servidor.');
+  const models = [MODEL, FALLBACK_MODEL].filter((value, index, list) => value && list.indexOf(value) === index);
+  let lastError;
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+    const model = models[modelIndex];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await generateWithModel(model, prompt, maxOutputTokens);
+        return clean(response.text || 'Sem conteúdo textual.');
+      } catch (error) {
+        lastError = error;
+        if (!isRetryable(error)) throw error;
+        if (attempt === 0) await sleep(900);
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function runAgent(res, campaignId, id, name, role, briefing, context, index, total) {
@@ -66,12 +95,13 @@ async function runAgent(res, campaignId, id, name, role, briefing, context, inde
       await persist('event',{campaign_id:campaignId,agent_id:id,event_type:'agent.completed',message:`${name} entregou para a próxima etapa.`});
     }
     send(res,'agent',{id,name,status:'completed',progress:100,message:'Entrega pronta. Enviando para a próxima estação.',preview:output.slice(0,420)});
-    return output;
+    return { output, failed:false };
   } catch (error) {
     const message = friendlyError(error);
+    console.error(`[agent:${id}]`, error?.stack || error);
     send(res,'agent',{id,name,status:'error',progress:100,message});
     if (campaignId) await persist('agent_run',{campaign_id:campaignId,agent_id:id,status:'failed',progress:100,task:role,output:{error:message}});
-    return `[${name}] ${message}`;
+    return { output:`[${name}] ${message}`, failed:true, error:message };
   }
 }
 
@@ -80,45 +110,50 @@ async function runCampaign(brief, res) {
   const campaignName = brief.length > 90 ? `${brief.slice(0,87)}...` : brief;
   const created = await persist('create_campaign',{name:campaignName || 'Nova campanha',briefing:brief});
   const campaignId = created?.data?.id || null;
-  send(res,'campaign',{status:'started',brief,model:MODEL,provider:'Gemini',agents:agents.length,campaignId,stages:agents.map(a=>a[0])});
+  send(res,'campaign',{status:'started',brief,provider:'Gemini',agents:agents.length,campaignId,stages:agents.map(a=>a[0])});
   send(res,'log',{from:'coordinator',message:'Briefing recebido. O Coordenador montou uma cadeia de produção: cada estação recebe a entrega da anterior.'});
 
   let context = '';
   const outputs = [];
+  let failed = 0;
   for (let i=0;i<agents.length;i++) {
     const [id,name,role] = agents[i];
     send(res,'stage',{current:i+1,total:agents.length,id,name,status:'starting',message:`${name} foi acionado.`});
-    const output = await runAgent(res,campaignId,id,name,role,brief,context,i+1,agents.length);
-    outputs.push({id,name,role,output});
-    context = `${context}\n\n### ${name} — ENTREGA RECEBIDA\n${output}`.slice(-60000);
-    send(res,'handoff',{from:id,to:agents[i+1]?.[0] || 'coordinator',message:`${name} entregou o pacote para ${agents[i+1]?.[1] || 'Coordenador'}.`});
+    const result = await runAgent(res,campaignId,id,name,role,brief,context,i+1,agents.length);
+    if (result.failed) failed++;
+    outputs.push({id,name,role,output:result.output,failed:result.failed});
+    context = `${context}\n\n### ${name} — ENTREGA RECEBIDA${result.failed ? ' — FALHA' : ''}\n${result.output}`.slice(-60000);
+    send(res,'handoff',{from:id,to:agents[i+1]?.[0] || 'coordinator',message:result.failed ? `${name} não concluiu a etapa; o Coordenador registrou a falha e a cadeia continuará com o contexto disponível.` : `${name} entregou o pacote para ${agents[i+1]?.[1] || 'Coordenador'}.`});
   }
 
-  send(res,'log',{from:'coordinator',message:'Todas as estações concluíram. O Coordenador está consolidando o pacote e o relatório dos agentes.'});
-  const synthesis = await askGemini(`Você é o Coordenador da MarketVerse AI. Crie a ENTREGA FINAL completa e executável para o briefing abaixo, usando as entregas dos 10 agentes. Não resuma demais.\n\nBRIEFING:\n${brief}\n\nENTREGAS DOS AGENTES:\n${context}\n\nEstruture exatamente nestas áreas: RESUMO EXECUTIVO; OBJETIVO; PÚBLICO; OFERTA E POSICIONAMENTO; PLANO DE CONTEÚDO; CRIATIVOS E ROTEIROS; COPYS; MÍDIA PAGA; SEO LOCAL; CRM/WHATSAPP; TRACKING E KPIs; CRONOGRAMA DE EXECUÇÃO; CHECKLIST DE ATIVOS. No final inclua PROJEÇÕES, claramente marcadas como hipóteses/metas e nunca como resultados reais. Gere recomendações práticas.`, 5200);
+  send(res,'log',{from:'coordinator',message:'As estações foram processadas. O Coordenador está consolidando o pacote e o relatório dos agentes.'});
+  let synthesis = '';
+  let synthesisFailed = false;
+  try {
+    synthesis = await askGemini(`Você é o Coordenador da MarketVerse AI. Crie a ENTREGA FINAL completa e executável para o briefing abaixo, usando as entregas dos 10 agentes. Não resuma demais.\n\nBRIEFING:\n${brief}\n\nENTREGAS DOS AGENTES:\n${context}\n\nEstruture exatamente nestas áreas: RESUMO EXECUTIVO; OBJETIVO; PÚBLICO; OFERTA E POSICIONAMENTO; PLANO DE CONTEÚDO; CRIATIVOS E ROTEIROS; COPYS; MÍDIA PAGA; SEO LOCAL; CRM/WHATSAPP; TRACKING E KPIs; CRONOGRAMA DE EXECUÇÃO; CHECKLIST DE ATIVOS. No final inclua PROJEÇÕES, claramente marcadas como hipóteses/metas e nunca como resultados reais. Gere recomendações práticas.`, 5200);
+  } catch (error) {
+    synthesisFailed = true;
+    failed++;
+    synthesis = `A consolidação final não pôde ser concluída: ${friendlyError(error)}`;
+    console.error('[coordinator]', error?.stack || error);
+  }
 
-  const report = `RELATÓRIO DE EXECUÇÃO — ${campaignName}\n\nBRIEFING\n${brief}\n\nAGENTES EXECUTADOS: ${outputs.length}/10\nTEMPO: ${Math.round((Date.now()-started)/1000)}s\n\n` + outputs.map((x,i)=>`━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${i+1}. ${x.name.toUpperCase()}\nFUNÇÃO: ${x.role}\nSTATUS: CONCLUÍDO\n\nENTREGA DO AGENTE:\n${x.output}`).join('\n\n') + `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCONSOLIDAÇÃO DO COORDENADOR\nO Coordenador recebeu as 10 entregas acima e gerou o pacote final abaixo.\n\n${synthesis}`;
+  const report = `RELATÓRIO DE EXECUÇÃO — ${campaignName}\n\nBRIEFING\n${brief}\n\nAGENTES EXECUTADOS: ${outputs.filter(x=>!x.failed).length}/10\nFALHAS: ${failed}\nTEMPO: ${Math.round((Date.now()-started)/1000)}s\n\n` + outputs.map((x,i)=>`━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${i+1}. ${x.name.toUpperCase()}\nFUNÇÃO: ${x.role}\nSTATUS: ${x.failed ? 'FALHA' : 'CONCLUÍDO'}\n\nENTREGA DO AGENTE:\n${x.output}`).join('\n\n') + `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCONSOLIDAÇÃO DO COORDENADOR\n${synthesis}`;
 
-  const kit = {
-    version:'2.0', campaignId, title:campaignName, briefing:brief,
-    generatedAt:new Date().toISOString(), durationSeconds:Math.round((Date.now()-started)/1000),
-    agents:outputs.map(x=>({id:x.id,name:x.name,role:x.role,output:x.output})),
-    finalCampaign:synthesis, executionReport:report
-  };
+  const kit = { version:'2.1', campaignId, title:campaignName, briefing:brief, generatedAt:new Date().toISOString(), durationSeconds:Math.round((Date.now()-started)/1000), agents:outputs.map(x=>({id:x.id,name:x.name,role:x.role,output:x.output,failed:x.failed})), finalCampaign:synthesis, executionReport:report, status:failed ? 'completed_with_errors' : 'completed' };
 
   if (campaignId) {
-    await persist('deliverable',{campaign_id:campaignId,agent_id:'coordinator',type:'final_campaign',title:'Pacote final da campanha',content:{text:synthesis,agents:outputs.map(x=>({id:x.id,name:x.name}))}});
-    await persist('deliverable',{campaign_id:campaignId,agent_id:'coordinator',type:'execution_report',title:'Relatório dos 10 agentes',content:{text:report}});
+    await persist('deliverable',{campaign_id:campaignId,agent_id:'coordinator',type:'final_campaign',title:'Pacote final da campanha',content:{text:synthesis,agents:outputs.map(x=>({id:x.id,name:x.name,failed:x.failed}))}});
+    await persist('deliverable',{campaign_id:campaignId,agent_id:'coordinator',type:'execution_report',title:'Relatório dos agentes',content:{text:report}});
     await persist('deliverable',{campaign_id:campaignId,agent_id:'coordinator',type:'campaign_kit',title:'Kit completo da campanha',content:kit});
-    await persist('event',{campaign_id:campaignId,event_type:'campaign.completed',message:'Coordenador finalizou campanha, relatório e kit completo.'});
-    await persist('complete_campaign',{campaign_id:campaignId,status:'completed'});
+    await persist('event',{campaign_id:campaignId,event_type:failed ? 'campaign.completed_with_errors' : 'campaign.completed',message:failed ? `Campanha concluída com ${failed} falha(s).` : 'Coordenador finalizou campanha, relatório e kit completo.'});
+    await persist('complete_campaign',{campaign_id:campaignId,status:failed ? 'completed_with_errors' : 'completed'});
   }
-  send(res,'coordinator',{status:'completed',output:synthesis,report,kit,deliverables:{pdf:true,kit:true,report:true,publication:true}});
-  send(res,'campaign',{status:'completed',durationMs:Date.now()-started,successful:outputs.length,failed:0,campaignId});
+  send(res,'coordinator',{status:synthesisFailed?'error':failed?'completed_with_errors':'completed',output:synthesis,report,kit,deliverables:{pdf:true,kit:true,report:true,publication:true},failed});
+  send(res,'campaign',{status:failed?'completed_with_errors':'completed',durationMs:Date.now()-started,successful:outputs.filter(x=>!x.failed).length,failed,campaignId});
   res.end();
 }
 
-// Gera um PDF textual válido no servidor. O conteúdo é simples de propósito para ser confiável em qualquer navegador.
 function pdfEscape(s){return String(s).replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)').replace(/\r?\n/g,' ')}
 function makePdf(text){
   const lines=[]; for(const raw of String(text).split(/\r?\n/)){const t=raw.trimEnd(); if(!t){lines.push('');continue} let rest=t; while(rest.length>96){let cut=rest.lastIndexOf(' ',96);if(cut<20)cut=96;lines.push(rest.slice(0,cut));rest=rest.slice(cut+1)} lines.push(rest)}
@@ -136,10 +171,10 @@ app.get('/api/campaign/stream', async (req,res) => {
   const brief=String(req.query.brief||'').trim();
   res.setHeader('Content-Type','text/event-stream; charset=utf-8'); res.setHeader('Cache-Control','no-cache, no-transform'); res.setHeader('Connection','keep-alive'); res.flushHeaders?.();
   if(!brief){send(res,'error',{message:'Informe o briefing da campanha.'});return res.end();}
-  if(!gemini){send(res,'error',{message:'GEMINI_API_KEY não configurada no servidor.'});return res.end();}
+  if(!gemini){send(res,'error',{message:'O motor de IA não está configurado no servidor.'});return res.end();}
   try{await runCampaign(brief,res);}catch(error){console.error(error);send(res,'error',{message:friendlyError(error)});res.end();}
 });
 
-app.get('/api/health',(_req,res)=>res.json({ok:true,provider:'Gemini',geminiConfigured:Boolean(gemini),supabaseConfigured:Boolean(PERSIST_URL&&SUPABASE_KEY),model:MODEL,agents:agents.length,pipeline:'sequential-handoff',deliverables:['final_campaign','execution_report','campaign_kit','pdf']}));
+app.get('/api/health',(_req,res)=>res.json({ok:true,provider:'Gemini',geminiConfigured:Boolean(gemini),supabaseConfigured:Boolean(PERSIST_URL&&SUPABASE_KEY),agents:agents.length,pipeline:'sequential-handoff',deliverables:['final_campaign','execution_report','campaign_kit','pdf']}));
 
 const port=Number(process.env.PORT||3000);app.listen(port,()=>console.log(`MarketVerse AI running on :${port} | pipeline=sequential-handoff | provider=Gemini`));

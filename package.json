@@ -1,6 +1,6 @@
 {
   "name": "marketverse-ai",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
   "dependencies": {
     "@google/genai": "latest",
     "dotenv": "latest",
-    "express": "latest"
+    "express": "latest",
+    "pdfkit": "^0.17.2"
   }
 }
